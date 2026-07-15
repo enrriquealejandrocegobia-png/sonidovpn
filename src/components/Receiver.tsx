@@ -59,10 +59,23 @@ export default function Receiver() {
     socket.on('connect', () => {
       setIsConnected(true);
       setStatus('Conectado. Esperando audio...');
-      setupAudio();
     });
 
-    socket.on('audio-chunk', (chunk: ArrayBuffer) => {
+    socket.on('audio-chunk', (payload: any) => {
+      let chunk: ArrayBuffer;
+      let mimeType = 'audio/webm;codecs=opus';
+      
+      if (payload instanceof ArrayBuffer) {
+        chunk = payload;
+      } else {
+        chunk = payload.chunk;
+        mimeType = payload.mimeType || mimeType;
+      }
+
+      if (!mediaSourceRef.current) {
+        setupAudio(mimeType);
+      }
+
       setStatus('Recibiendo audio...');
       queueRef.current.push(chunk);
       processQueue();
@@ -76,8 +89,12 @@ export default function Receiver() {
     });
   };
 
-  const setupAudio = () => {
+  const setupAudio = (mimeType: string) => {
     if (!audioRef.current) return;
+    if (typeof MediaSource === 'undefined') {
+      setStatus('Error: MediaSource no está soportado en tu navegador (intenta con Chrome).');
+      return;
+    }
     
     const mediaSource = new MediaSource();
     mediaSourceRef.current = mediaSource;
@@ -85,7 +102,7 @@ export default function Receiver() {
     
     mediaSource.addEventListener('sourceopen', () => {
       try {
-        const sourceBuffer = mediaSource.addSourceBuffer('audio/webm;codecs=opus');
+        const sourceBuffer = mediaSource.addSourceBuffer(mimeType || 'audio/webm;codecs=opus');
         sourceBufferRef.current = sourceBuffer;
         
         sourceBuffer.addEventListener('updateend', () => {
@@ -93,9 +110,9 @@ export default function Receiver() {
         });
         
         audioRef.current?.play().catch(e => console.log('Autoplay blocked:', e));
-      } catch (e) {
+      } catch (e: any) {
         console.error('Error adding source buffer:', e);
-        setStatus('Formato no soportado');
+        setStatus(`Formato no soportado en este dispositivo: ${mimeType}`);
       }
     });
   };
@@ -124,6 +141,8 @@ export default function Receiver() {
     setStatus('Desconectado');
     queueRef.current = [];
     setLatency(0);
+    mediaSourceRef.current = null;
+    sourceBufferRef.current = null;
   };
 
   return (

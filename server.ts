@@ -6,7 +6,7 @@ import { Server } from "socket.io";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
   const httpServer = createHttpServer(app);
 
   // Set up Socket.IO
@@ -22,9 +22,9 @@ async function startServer() {
       socket.to(pin).emit('peer-joined');
     });
 
-    socket.on('audio-chunk', ({ pin, chunk }) => {
-      // Broadcast the audio chunk to all other clients in the room (the receiver)
-      socket.to(pin).emit('audio-chunk', chunk);
+    socket.on('audio-chunk', (payload) => {
+      // Broadcast the audio payload (contains chunk and mimeType)
+      socket.to(payload.pin).emit('audio-chunk', payload);
     });
 
     socket.on('stop-audio', (pin) => {

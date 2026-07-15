@@ -30,7 +30,11 @@ export default function Sender() {
 
     const getDevices = async () => {
       try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
+        try {
+          await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (e) {
+          console.warn("Could not get initial audio permission, labels might be hidden", e);
+        }
         const devices = await navigator.mediaDevices.enumerateDevices();
         const audioInputs = devices.filter(device => device.kind === 'audioinput');
         setInputDevices(audioInputs);
@@ -45,6 +49,20 @@ export default function Sender() {
       stopRecording();
     };
   }, []);
+
+  const getSupportedMimeType = () => {
+    const types = [
+      'audio/webm;codecs=opus',
+      'audio/webm',
+      'audio/ogg;codecs=opus',
+      'audio/mp4',
+      ''
+    ];
+    for (const t of types) {
+      if (t === '' || MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return '';
+  };
 
   const startRecording = async () => {
     try {
@@ -70,14 +88,16 @@ export default function Sender() {
       const audioStream = new MediaStream([audioTracks[0]]);
       streamRef.current = audioStream;
 
+      const mimeType = getSupportedMimeType();
+
       const mediaRecorder = new MediaRecorder(audioStream, {
-        mimeType: 'audio/webm;codecs=opus',
+        mimeType: mimeType,
         audioBitsPerSecond: bitrate
       });
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0 && socketRef.current && pin) {
-          socketRef.current.emit('audio-chunk', { pin, chunk: e.data });
+          socketRef.current.emit('audio-chunk', { pin, chunk: e.data, mimeType });
         }
       };
 
@@ -92,12 +112,12 @@ export default function Sender() {
 
     } catch (err: any) {
       console.error(err);
-      if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
+      if (err.name === 'NotAllowedError' || (err.message && err.message.includes('Permission denied'))) {
         setStatus('Error: Permiso denegado. Debes permitir el acceso a la pantalla o micrófono.');
       } else if (err.message && err.message.includes('display-capture')) {
         setStatus('Error: Permiso denegado. Para compartir pantalla, abre la app en una nueva pestaña (Open in New Tab).');
       } else {
-        setStatus('Error al capturar audio.');
+        setStatus(`Error al capturar audio: ${err.message || 'Desconocido'}`);
       }
     }
   };
