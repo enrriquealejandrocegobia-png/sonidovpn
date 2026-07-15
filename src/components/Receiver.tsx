@@ -13,10 +13,8 @@ export default function Receiver() {
   const [latency, setLatency] = useState<number>(0);
   
   const socketRef = useRef<Socket | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const mediaSourceRef = useRef<MediaSource | null>(null);
-  const sourceBufferRef = useRef<SourceBuffer | null>(null);
-  const queueRef = useRef<ArrayBuffer[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const nextPlayTimeRef = useRef<number>(0);
   
   useEffect(() => {
     const getDevices = async () => {
@@ -37,10 +35,47 @@ export default function Receiver() {
   }, []);
 
   useEffect(() => {
-    if (audioRef.current && selectedDevice && typeof (audioRef.current as any).setSinkId === 'function') {
-      (audioRef.current as any).setSinkId(selectedDevice).catch((e: any) => console.error('SetSinkId error:', e));
+    if (audioContextRef.current && selectedDevice && typeof (audioContextRef.current as any).setSinkId === 'function') {
+      (audioContextRef.current as any).setSinkId(selectedDevice).catch((e: any) => console.error('SetSinkId error:', e));
     }
   }, [selectedDevice]);
+
+  const setupAudioContext = () => {
+    if (!audioContextRef.current) {
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      audioContextRef.current = new AudioContextClass();
+    }
+    if (audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume();
+    }
+    // reset play time on new connection
+    nextPlayTimeRef.current = audioContextRef.current.currentTime + 0.2;
+  };
+
+  const processPcmChunk = (chunk: ArrayBuffer, sampleRate: number) => {
+    if (!audioContextRef.current) return;
+    const ctx = audioContextRef.current;
+    
+    const int16Data = new Int16Array(chunk);
+    const float32Data = new Float32Array(int16Data.length);
+    for (let i = 0; i < int16Data.length; i++) {
+      float32Data[i] = int16Data[i] / 32768;
+    }
+    
+    const audioBuffer = ctx.createBuffer(1, float32Data.length, sampleRate);
+    audioBuffer.getChannelData(0).set(float32Data);
+    
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+    
+    if (nextPlayTimeRef.current < ctx.currentTime) {
+      nextPlayTimeRef.current = ctx.currentTime + 0.1; 
+    }
+    
+    source.start(nextPlayTimeRef.current);
+    nextPlayTimeRef.current += audioBuffer.duration;
+  };
 
   const handleConnect = () => {
     if (!pin || pin.length !== 6) {
@@ -49,6 +84,8 @@ export default function Receiver() {
     }
     
     setStatus('Conectando...');
+    setupAudioContext();
+
     const socket = io({
       transports: transport === 'polling' ? ['polling'] : ['websocket', 'polling']
     });
@@ -62,24 +99,10 @@ export default function Receiver() {
     });
 
     socket.on('audio-chunk', (payload: any) => {
-      let chunk: ArrayBuffer;
-      let mimeType = 'audio/webm;codecs=opus';
-      
-      if (payload instanceof ArrayBuffer) {
-        chunk = payload;
-      } else {
-        chunk = payload.chunk;
-        mimeType = payload.mimeType || mimeType;
+      setStatus('Recibiendo audio (PCM)...');
+      if (payload.type === 'pcm') {
+        processPcmChunk(payload.chunk, payload.sampleRate);
       }
-
-      if (!mediaSourceRef.current) {
-        setupAudio(mimeType);
-      }
-
-      setStatus('Recibiendo audio...');
-      queueRef.current.push(chunk);
-      processQueue();
-      // Simulate latency variation for UI
       setLatency(Math.floor(Math.random() * 20) + 30);
     });
 
@@ -89,60 +112,17 @@ export default function Receiver() {
     });
   };
 
-  const setupAudio = (mimeType: string) => {
-    if (!audioRef.current) return;
-    if (typeof MediaSource === 'undefined') {
-      setStatus('Error: MediaSource no está soportado en tu navegador (intenta con Chrome).');
-      return;
-    }
-    
-    const mediaSource = new MediaSource();
-    mediaSourceRef.current = mediaSource;
-    audioRef.current.src = URL.createObjectURL(mediaSource);
-    
-    mediaSource.addEventListener('sourceopen', () => {
-      try {
-        const sourceBuffer = mediaSource.addSourceBuffer(mimeType || 'audio/webm;codecs=opus');
-        sourceBufferRef.current = sourceBuffer;
-        
-        sourceBuffer.addEventListener('updateend', () => {
-          processQueue();
-        });
-        
-        audioRef.current?.play().catch(e => console.log('Autoplay blocked:', e));
-      } catch (e: any) {
-        console.error('Error adding source buffer:', e);
-        setStatus(`Formato no soportado en este dispositivo: ${mimeType}`);
-      }
-    });
-  };
-
-  const processQueue = () => {
-    const sourceBuffer = sourceBufferRef.current;
-    if (!sourceBuffer || sourceBuffer.updating || queueRef.current.length === 0) {
-      return;
-    }
-    
-    try {
-      const chunk = queueRef.current.shift();
-      if (chunk) {
-        sourceBuffer.appendBuffer(chunk);
-      }
-    } catch (e) {
-      console.error('Error appending buffer:', e);
-    }
-  };
-
   const disconnect = () => {
     if (socketRef.current) {
       socketRef.current.disconnect();
     }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
     setIsConnected(false);
     setStatus('Desconectado');
-    queueRef.current = [];
     setLatency(0);
-    mediaSourceRef.current = null;
-    sourceBufferRef.current = null;
   };
 
   return (
@@ -237,9 +217,6 @@ export default function Receiver() {
               </div>
             )}
           </div>
-
-          {/* Hidden audio element */}
-          <audio ref={audioRef} autoPlay />
 
           {!isConnected ? (
             <button

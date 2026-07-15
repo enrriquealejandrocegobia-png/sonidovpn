@@ -9,11 +9,12 @@ export default function Sender() {
   
   const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>('screen');
-  const [bitrate, setBitrate] = useState<number>(128000);
+  const [bitrate, setBitrate] = useState<number>(128000); // Kept for UI consistency, not used for PCM
   
   const socketRef = useRef<Socket | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaContextRef = useRef<any>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const isRecordingRef = useRef(false);
 
   useEffect(() => {
     const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
@@ -21,8 +22,6 @@ export default function Sender() {
     
     const socket = io();
     socketRef.current = socket;
-    
-    socket.emit('join-room', generatedPin);
     
     socket.on('peer-joined', () => {
       setStatus('Dispositivo receptor conectado');
@@ -50,20 +49,6 @@ export default function Sender() {
     };
   }, []);
 
-  const getSupportedMimeType = () => {
-    const types = [
-      'audio/webm;codecs=opus',
-      'audio/webm',
-      'audio/ogg;codecs=opus',
-      'audio/mp4',
-      ''
-    ];
-    for (const t of types) {
-      if (t === '' || MediaRecorder.isTypeSupported(t)) return t;
-    }
-    return '';
-  };
-
   const startRecording = async () => {
     try {
       let stream: MediaStream;
@@ -88,16 +73,34 @@ export default function Sender() {
       const audioStream = new MediaStream([audioTracks[0]]);
       streamRef.current = audioStream;
 
-      const mimeType = getSupportedMimeType();
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const audioContext = new AudioContextClass();
+      const source = audioContext.createMediaStreamSource(audioStream);
+      
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 0; // Mute locally
 
-      const mediaRecorder = new MediaRecorder(audioStream, {
-        mimeType: mimeType,
-        audioBitsPerSecond: bitrate
-      });
+      source.connect(processor);
+      processor.connect(gainNode);
+      gainNode.connect(audioContext.destination);
 
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0 && socketRef.current && pin) {
-          socketRef.current.emit('audio-chunk', { pin, chunk: e.data, mimeType });
+      isRecordingRef.current = true;
+
+      processor.onaudioprocess = (e) => {
+        if (!isRecordingRef.current) return;
+        const inputData = e.inputBuffer.getChannelData(0);
+        const int16Data = new Int16Array(inputData.length);
+        for (let i = 0; i < inputData.length; i++) {
+          int16Data[i] = Math.max(-1, Math.min(1, inputData[i])) * 32767;
+        }
+        if (socketRef.current && pin) {
+          socketRef.current.emit('audio-chunk', { 
+            pin, 
+            chunk: int16Data.buffer, 
+            sampleRate: audioContext.sampleRate, 
+            type: 'pcm' 
+          });
         }
       };
 
@@ -105,10 +108,17 @@ export default function Sender() {
         stopRecording();
       };
 
-      mediaRecorder.start(100);
-      mediaRecorderRef.current = mediaRecorder;
+      mediaContextRef.current = {
+        stop: () => {
+          processor.disconnect();
+          source.disconnect();
+          gainNode.disconnect();
+          audioContext.close();
+        }
+      };
+
       setIsRecording(true);
-      setStatus('Transmitiendo audio...');
+      setStatus('Transmitiendo audio (PCM)...');
 
     } catch (err: any) {
       console.error(err);
@@ -123,8 +133,9 @@ export default function Sender() {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
+    isRecordingRef.current = false;
+    if (mediaContextRef.current) {
+      try { mediaContextRef.current.stop(); } catch (e) {}
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
