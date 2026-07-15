@@ -1,6 +1,6 @@
 {
   "name": "Web Audio Streamer",
   "description": "Transmite audio del PC al celular a través de cualquier red (VPN/Proxy) usando WebSockets.",
-  "requestFramePermissions": ["microphone"],
+  "requestFramePermissions": ["microphone", "display-capture"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

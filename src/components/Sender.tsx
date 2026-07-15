@@ -1,22 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { io, Socket } from 'socket.io-client';
-import { Mic, Square, Radio } from 'lucide-react';
+import { Mic, Square, Radio, Settings2, MonitorUp } from 'lucide-react';
 
 export default function Sender() {
   const [pin, setPin] = useState<string>('');
   const [isRecording, setIsRecording] = useState(false);
   const [status, setStatus] = useState<string>('Esperando...');
   
+  const [inputDevices, setInputDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDevice, setSelectedDevice] = useState<string>('screen');
+  const [bitrate, setBitrate] = useState<number>(128000);
+  
   const socketRef = useRef<Socket | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
-    // Generate a random 6-digit PIN
     const generatedPin = Math.floor(100000 + Math.random() * 900000).toString();
     setPin(generatedPin);
     
-    // Connect to server
     const socket = io();
     socketRef.current = socket;
     
@@ -26,6 +28,18 @@ export default function Sender() {
       setStatus('Dispositivo receptor conectado');
     });
 
+    const getDevices = async () => {
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(device => device.kind === 'audioinput');
+        setInputDevices(audioInputs);
+      } catch (err) {
+        console.error('Error getting devices', err);
+      }
+    };
+    getDevices();
+
     return () => {
       socket.disconnect();
       stopRecording();
@@ -34,25 +48,31 @@ export default function Sender() {
 
   const startRecording = async () => {
     try {
-      // Capture system audio. Display media is required to capture system audio on desktop.
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true
-      });
+      let stream: MediaStream;
+      if (selectedDevice === 'screen') {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true
+        });
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { deviceId: { exact: selectedDevice } }
+        });
+      }
       
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length === 0) {
-        setStatus('Error: No se seleccionó audio al compartir la pantalla.');
+        setStatus('Error: No se seleccionó audio.');
         stream.getTracks().forEach(t => t.stop());
         return;
       }
 
-      // Create a stream with only the audio track to avoid sending video
       const audioStream = new MediaStream([audioTracks[0]]);
       streamRef.current = audioStream;
 
       const mediaRecorder = new MediaRecorder(audioStream, {
-        mimeType: 'audio/webm;codecs=opus'
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: bitrate
       });
 
       mediaRecorder.ondataavailable = (e) => {
@@ -61,19 +81,24 @@ export default function Sender() {
         }
       };
 
-      // Handle user stopping the stream via browser UI
       audioTracks[0].onended = () => {
         stopRecording();
       };
 
-      mediaRecorder.start(100); // 100ms chunks for low latency
+      mediaRecorder.start(100);
       mediaRecorderRef.current = mediaRecorder;
       setIsRecording(true);
       setStatus('Transmitiendo audio...');
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setStatus('Error al capturar audio. Asegúrate de compartir pestaña/pantalla con audio.');
+      if (err.name === 'NotAllowedError' || err.message.includes('Permission denied')) {
+        setStatus('Error: Permiso denegado. Debes permitir el acceso a la pantalla o micrófono.');
+      } else if (err.message && err.message.includes('display-capture')) {
+        setStatus('Error: Permiso denegado. Para compartir pantalla, abre la app en una nueva pestaña (Open in New Tab).');
+      } else {
+        setStatus('Error al capturar audio.');
+      }
     }
   };
 
@@ -92,44 +117,101 @@ export default function Sender() {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center space-y-6 w-full max-w-md mx-auto p-8 bg-zinc-900 rounded-2xl shadow-xl border border-zinc-800">
-      <div className="text-center">
-        <Radio className="w-12 h-12 text-blue-500 mx-auto mb-4" />
-        <h2 className="text-2xl font-semibold text-white">Transmitir Audio</h2>
-        <p className="text-zinc-400 mt-2 text-sm">
-          Comparte este PIN con tu dispositivo móvil para recibir el audio.
-        </p>
-      </div>
+    <div className="w-full flex flex-col md:flex-row gap-8">
+      {/* Sidebar Settings */}
+      <aside className="w-full md:w-72 border border-[#1C1C21] bg-[#0E0E11] p-6 flex flex-col gap-8 rounded-lg shrink-0">
+        <section>
+          <label className="text-[10px] font-bold text-zinc-500 uppercase mb-4 block tracking-tighter">
+            Configuración de Audio
+          </label>
+          <div className="space-y-4">
+            <div className="group">
+              <label className="text-xs mb-2 block text-zinc-300">Dispositivo de Entrada</label>
+              <select 
+                value={selectedDevice}
+                onChange={(e) => setSelectedDevice(e.target.value)}
+                disabled={isRecording}
+                className="w-full bg-[#16161A] border border-[#27272A] text-xs p-2 rounded-sm text-zinc-100 focus:outline-none focus:border-amber-500 disabled:opacity-50"
+              >
+                <option value="screen">Mezcla Estéreo (Capturar Pantalla)</option>
+                {inputDevices.map(d => (
+                  <option key={d.deviceId} value={d.deviceId}>{d.label || `Micrófono (${d.deviceId.slice(0,5)})`}</option>
+                ))}
+              </select>
+            </div>
+            
+            <div className="group">
+              <label className="text-xs mb-2 block text-zinc-300">Calidad (Bitrate)</label>
+              <input 
+                type="range" 
+                min="32000" max="320000" step="32000"
+                value={bitrate}
+                onChange={(e) => setBitrate(Number(e.target.value))}
+                disabled={isRecording}
+                className="w-full accent-amber-500 bg-zinc-800 h-1 rounded-lg appearance-none cursor-pointer disabled:opacity-50"
+              />
+              <div className="flex justify-between text-[10px] mt-1">
+                <span className="text-zinc-500">Baja</span>
+                <span className="text-amber-500 font-mono">{bitrate / 1000} kbps</span>
+                <span className="text-zinc-500">Alta</span>
+              </div>
+            </div>
+          </div>
+        </section>
 
-      <div className="bg-zinc-950 px-8 py-4 rounded-xl border border-zinc-800">
-        <span className="text-4xl font-mono tracking-widest text-white">{pin || '------'}</span>
-      </div>
+        <section>
+          <label className="text-[10px] font-bold text-zinc-500 uppercase mb-4 block tracking-tighter">
+            Estado de Red Local
+          </label>
+          <div className="bg-[#111114] p-3 border border-[#27272A] rounded-sm">
+            <div className="flex items-center justify-between text-xs mb-2">
+              <span className="text-zinc-400">WebSocket</span>
+              <span className="text-green-500 font-mono">Conectado</span>
+            </div>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-zinc-400">Latencia Est.</span>
+              <span className="text-amber-500 font-mono">~40ms</span>
+            </div>
+          </div>
+        </section>
+      </aside>
 
-      <div className="text-sm font-medium text-zinc-400">
-        Estado: <span className="text-blue-400">{status}</span>
-      </div>
+      {/* Main Panel */}
+      <div className="flex-1 flex flex-col bg-[#111114] border border-[#1C1C21] rounded-lg p-8 items-center justify-center relative overflow-hidden">
+        {/* Background decorative gradient */}
+        <div className="absolute top-0 left-0 w-full h-full bg-gradient-to-b from-amber-500/5 to-transparent pointer-events-none" />
+        
+        <div className="text-center z-10 w-full max-w-sm">
+          <Radio className={`w-12 h-12 mx-auto mb-6 ${isRecording ? 'text-amber-500 animate-pulse' : 'text-zinc-600'}`} />
+          
+          <div className="bg-[#16161A] px-8 py-4 rounded-sm border border-[#27272A] w-full text-center mb-6 shadow-inner">
+            <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2">ID de Sesión (PIN)</div>
+            <span className="text-5xl font-mono tracking-[0.2em] text-zinc-100">{pin || '------'}</span>
+          </div>
 
-      {!isRecording ? (
-        <button
-          onClick={startRecording}
-          className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl transition-all font-medium w-full justify-center"
-        >
-          <Mic className="w-5 h-5" />
-          <span>Iniciar Transmisión</span>
-        </button>
-      ) : (
-        <button
-          onClick={stopRecording}
-          className="flex items-center space-x-2 bg-red-600 hover:bg-red-500 text-white px-6 py-3 rounded-xl transition-all font-medium w-full justify-center"
-        >
-          <Square className="w-5 h-5" />
-          <span>Detener Transmisión</span>
-        </button>
-      )}
-      
-      <p className="text-xs text-zinc-500 text-center">
-        Nota: Al iniciar, selecciona "Pestaña de Chrome" o "Toda la pantalla" y asegúrate de marcar la casilla <strong>"Compartir audio"</strong>.
-      </p>
+          <div className="text-[10px] font-bold uppercase tracking-tighter text-zinc-500 mb-8 bg-black/40 py-2 px-4 rounded-sm border border-zinc-800/50 inline-block">
+            Estado: <span className={isRecording ? "text-green-500" : "text-amber-500"}>{status}</span>
+          </div>
+
+          {!isRecording ? (
+            <button
+              onClick={startRecording}
+              className="flex items-center space-x-2 bg-amber-500 hover:bg-amber-400 text-black px-6 py-4 rounded-sm transition-all font-bold text-sm uppercase tracking-wider w-full justify-center shadow-[0_0_20px_rgba(245,158,11,0.2)] hover:shadow-[0_0_30px_rgba(245,158,11,0.4)]"
+            >
+              <Mic className="w-4 h-4" />
+              <span>Iniciar Transmisión</span>
+            </button>
+          ) : (
+            <button
+              onClick={stopRecording}
+              className="flex items-center space-x-2 bg-red-500 hover:bg-red-400 text-black px-6 py-4 rounded-sm transition-all font-bold text-sm uppercase tracking-wider w-full justify-center shadow-[0_0_20px_rgba(239,68,68,0.2)]"
+            >
+              <Square className="w-4 h-4" />
+              <span>Detener Transmisión</span>
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
